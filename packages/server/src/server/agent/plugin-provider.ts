@@ -416,6 +416,10 @@ class ProviderRuntime {
     this.connection = null;
     this.unsubscribe?.();
     this.unsubscribe = null;
+    // Requests whose replies can only arrive on the lost connection settle with the loss.
+    for (const request of this.requests.values()) request.reject(error);
+    this.requests.clear();
+    this.sessionRequests.clear();
     for (const session of this.sessions.values()) session.connectionClosed(error);
   }
 
@@ -696,7 +700,10 @@ class ProviderRuntimeSession {
   }
 
   async close(): Promise<void> {
-    if (this.restoration === "parent") {
+    // A terminal session has no live provider counterpart left: its connection is gone or
+    // the provider already closed it. Sending session.close would hit a fresh connection
+    // (after recovery) or a dead one, so finish locally instead of failing the caller.
+    if (this.restoration === "parent" || this.terminal) {
       this.runtime.removeSession(this.id, this.providerSessionId);
       return;
     }
