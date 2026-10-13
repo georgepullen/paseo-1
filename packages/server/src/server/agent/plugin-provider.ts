@@ -609,6 +609,12 @@ class ProviderRuntimeSession {
   >();
   private readonly activeTurnIds = new Set<string>();
   private terminal = false;
+  /**
+   * Terminal with no reachable provider counterpart: the connection is gone or the provider
+   * already sent session.closed. A runtime failure on a live connection is terminal but the
+   * provider session still exists, so close() must still send session.close to clean it up.
+   */
+  private providerGone = false;
   config: ProviderConfigState = { models: [], modes: [], thinkingOptions: [], settings: [] };
   commands: Array<{ name: string; description: string; argumentHint?: string }> = [];
   persistence: ProviderPersistence | null = null;
@@ -700,10 +706,11 @@ class ProviderRuntimeSession {
   }
 
   async close(): Promise<void> {
-    // A terminal session has no live provider counterpart left: its connection is gone or
-    // the provider already closed it. Sending session.close would hit a fresh connection
-    // (after recovery) or a dead one, so finish locally instead of failing the caller.
-    if (this.restoration === "parent" || this.terminal) {
+    // Skip the send only when the provider-side session is unreachable: the connection is
+    // gone or the provider already sent session.closed. A session that failed on a live
+    // connection is terminal but still owns provider resources, so it still sends
+    // session.close to clean them up.
+    if (this.restoration === "parent" || this.providerGone) {
       this.runtime.removeSession(this.id, this.providerSessionId);
       return;
     }
@@ -762,6 +769,7 @@ class ProviderRuntimeSession {
     if (event.type === "session.runtime_failed" || event.type === "session.closed") {
       if (this.terminal) return;
       this.terminal = true;
+      if (event.type === "session.closed") this.providerGone = true;
       this.publish(event);
       this.rejectPending(new Error(event.error?.message ?? `Provider session ${this.id} closed`));
       return;
@@ -784,6 +792,7 @@ class ProviderRuntimeSession {
       });
     }
     this.terminal = true;
+    this.providerGone = true;
     this.rejectPending(error);
   }
 
