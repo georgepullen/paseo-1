@@ -732,6 +732,53 @@ describe("PluginAgentClientRegistry", () => {
     }
   });
 
+  test("a stale session closes locally and resumes from persistence after connection loss", async () => {
+    const harness = createProviderHarness();
+    const registry = new PluginAgentClientRegistry(createTestLogger());
+    registry.replace([harness.registration]);
+    try {
+      const client = registry.clients()[harness.registration.id]!;
+      const session = await client.createSession({
+        provider: harness.registration.id,
+        cwd: "/workspace",
+      });
+      const persistence = session.describePersistence();
+      expect(persistence).not.toBeNull();
+
+      await harness.failConnection(new Error("Plugin process exited: plugin-direct"));
+
+      await expect(session.close()).resolves.toBeUndefined();
+      expect(harness.inputs.filter((input) => input.type === "session.close")).toEqual([]);
+
+      const resumed = await client.resumeSession(persistence!, { cwd: "/workspace" });
+      await expect(
+        resumed.startTurn("after recovery", { clientMessageId: "after-recovery" }),
+      ).resolves.toEqual({ turnId: "turn-1" });
+      expect(harness.connectCount()).toBe(2);
+    } finally {
+      await registry.shutdown();
+    }
+  });
+
+  test("settles pending connection requests when the connection is lost", async () => {
+    const harness = createProviderHarness({
+      handleInput: async (input) => input.type === "catalog",
+    });
+    const registry = new PluginAgentClientRegistry(createTestLogger());
+    registry.replace([harness.registration]);
+    try {
+      const client = registry.clients()[harness.registration.id]!;
+      const pendingCatalog = client.fetchCatalog({ scope: "global" });
+      const catalogAccepted = () => harness.inputs.some((input) => input.type === "catalog");
+      await expect.poll(catalogAccepted).toBe(true);
+      await harness.failConnection(new Error("Plugin process exited: plugin-direct"));
+
+      await expect(pendingCatalog).rejects.toThrow("Plugin process exited: plugin-direct");
+    } finally {
+      await registry.shutdown();
+    }
+  });
+
   test("adapts callback providers into the existing AgentClient and AgentSession path", async () => {
     const harness = createProviderHarness();
     const registry = new PluginAgentClientRegistry(createTestLogger());
