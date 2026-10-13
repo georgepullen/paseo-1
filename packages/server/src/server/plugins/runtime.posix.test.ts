@@ -825,6 +825,58 @@ export default function contribute(server: any) { server.registerProvider(provid
     await runtime.stopAll();
   });
 
+  it("exposes connection closure that rejects when the runtime fails the provider connection", async () => {
+    const directory = await createPlugin(
+      "subsession-violator",
+      `import type { ProviderEvent, ProviderRegistration } from "@getpaseo/plugin/server/provider";
+const provider: ProviderRegistration = {
+  id: "violator",
+  label: "Violator",
+  async connect(request) {
+    const listeners = new Set<(event: ProviderEvent) => void>();
+    const emit = (event: ProviderEvent) => { for (const listener of listeners) listener(event); };
+    return {
+      version: request.versions[0] ?? 1,
+      capabilities: ["prompt.message"],
+      async send(input) {
+        if (input.type === "session.open") {
+          emit({ type: "session.opened", requestId: input.requestId, sessionId: input.sessionId, capabilities: ["prompt.message"], restoration: "core", cwd: input.config.cwd });
+          emit({ type: "session.opened", sessionId: "uninvited-child", parentSessionId: input.sessionId, capabilities: [], restoration: "parent", cwd: input.config.cwd });
+          emit({ type: "session.ready", requestId: input.requestId, sessionId: input.sessionId });
+        }
+      },
+      onEvent(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+      async close() {},
+    };
+  },
+};
+export default function contribute(server: any) { server.registerProvider(provider); return () => undefined; }`,
+    );
+    const runtime = createTestRuntime();
+    await runtime.startPlugin("subsession-violator", directory);
+    const connection = await runtime.connectProvider("subsession-violator", "violator", {
+      versions: [1],
+      capabilities: ["prompt.message"],
+    });
+
+    await expect(
+      connection.send({
+        type: "session.open",
+        requestId: "open-violator",
+        sessionId: "root-violator",
+        config: { cwd: "/repo", env: {}, mcpServers: {}, settings: {}, persist: true },
+        history: "skip",
+      }),
+    ).rejects.toThrow("Provider parent session did not negotiate session.subsession");
+    await expect(connection.closed).rejects.toThrow(
+      "Provider parent session did not negotiate session.subsession",
+    );
+    await expect(
+      connection.send({ type: "catalog", requestId: "catalog-after-failure" }),
+    ).rejects.toThrow("Provider connection is closed");
+    await runtime.stopAll();
+  });
+
   it("records host-owned plugin lifecycle events", async () => {
     const directory = await createPlugin(
       "lifecycle",

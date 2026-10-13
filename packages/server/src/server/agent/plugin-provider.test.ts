@@ -38,176 +38,195 @@ interface ProviderHarnessOptions {
 function createProviderHarness(options: ProviderHarnessOptions = {}) {
   let listener: ((event: ProviderEvent) => void) | null = null;
   let closeCount = 0;
-  let resolveClosed!: () => void;
-  const closed = new Promise<void>((resolve) => {
-    resolveClosed = resolve;
-  });
+  let connectCount = 0;
   const inputs: ProviderInput[] = [];
   const emit = (event: ProviderEvent) => listener?.(event);
   const capabilities = options.capabilities ?? CAPABILITIES;
+  let active: { fail(error: Error): void; closed: Promise<void> } | null = null;
 
-  const connection: ProviderConnection = {
-    version: 1,
-    capabilities,
-    async send(input) {
-      inputs.push(input);
-      if (await options.handleInput?.(input, emit)) return;
-      if (input.type === "catalog") {
-        emit({
-          type: "catalog",
-          requestId: input.requestId,
-          catalog: {
-            models: [{ id: "plugin-model", label: "Plugin model" }],
-            modes: [{ id: "build", label: "Build" }],
-            thinkingOptions: [{ id: "deep", label: "Deep" }],
-            defaultModel: "plugin-model",
-            defaultMode: "build",
-            defaultThinkingOption: "deep",
-          },
-        });
-        return;
-      }
-      if (input.type === "session.open") {
-        emit({
-          type: "session.opened",
-          requestId: input.requestId,
-          sessionId: input.sessionId,
-          capabilities,
-          restoration: "core",
-          persistence: { version: 1, data: { token: "root" } },
-          cwd: input.config.cwd,
-        });
-        emit({
-          type: "session.config",
-          sessionId: input.sessionId,
-          config: {
-            model: "plugin-model",
-            mode: "build",
-            models: [{ id: "plugin-model", label: "Plugin model" }],
-            modes: [{ id: "build", label: "Build" }],
-            thinkingOptions: [],
-            settings: [
-              {
-                type: "select",
-                id: "voice",
-                label: "Voice",
-                value: "direct",
-                options: [{ label: "Direct", value: "direct" }],
-              },
-            ],
-          },
-        });
-        emit({
-          type: "session.opened",
-          sessionId: "child-1",
-          parentSessionId: input.sessionId,
-          capabilities: [],
-          restoration: "parent",
-          title: "Plugin child",
-          cwd: input.config.cwd,
-        });
-        emit({
-          type: "timeline.item",
-          sessionId: "child-1",
-          item: { type: "assistant_message", id: "child-message", text: "Child result" },
-        });
-        emit({
-          type: "session.turn",
-          sessionId: "child-1",
-          turnId: "child-turn",
-          state: "completed",
-        });
-        emit({ type: "session.ready", sessionId: "child-1" });
-        options.openChildren?.(input.sessionId, emit);
-        emit({ type: "session.ready", requestId: input.requestId, sessionId: input.sessionId });
-        return;
-      }
-      if (input.type === "session.prompt") {
-        emit({
-          type: "session.prompt_result",
-          sessionId: input.sessionId,
-          clientMessageId: input.prompt.clientMessageId,
-          result: { type: "turn", turnId: "turn-1" },
-        });
-        emit({
-          type: "session.turn",
-          sessionId: input.sessionId,
-          turnId: "turn-1",
-          state: "started",
-        });
-        emit({
-          type: "timeline.item",
-          sessionId: input.sessionId,
-          item: { type: "assistant_message", id: "answer", text: "Hel" },
-        });
-        emit({
-          type: "timeline.item",
-          sessionId: input.sessionId,
-          item: { type: "assistant_message", id: "answer", text: "Hello" },
-        });
-        emit({
-          type: "session.permission",
-          sessionId: input.sessionId,
-          request: { id: "permission-1", name: "write", kind: "tool" },
-        });
-        if (options.completeTurn !== false) {
+  const buildConnection = (): ProviderConnection => {
+    let failed: Error | null = null;
+    let resolveClosed!: () => void;
+    let rejectClosed!: (error: Error) => void;
+    const closed = new Promise<void>((resolve, reject) => {
+      resolveClosed = resolve;
+      rejectClosed = reject;
+    });
+    void closed.catch(() => undefined);
+    const connection: ProviderConnection = {
+      version: 1,
+      capabilities,
+      closed,
+      async send(input) {
+        if (failed) throw failed;
+        inputs.push(input);
+        if (await options.handleInput?.(input, emit)) return;
+        if (input.type === "catalog") {
+          emit({
+            type: "catalog",
+            requestId: input.requestId,
+            catalog: {
+              models: [{ id: "plugin-model", label: "Plugin model" }],
+              modes: [{ id: "build", label: "Build" }],
+              thinkingOptions: [{ id: "deep", label: "Deep" }],
+              defaultModel: "plugin-model",
+              defaultMode: "build",
+              defaultThinkingOption: "deep",
+            },
+          });
+          return;
+        }
+        if (input.type === "session.open") {
+          emit({
+            type: "session.opened",
+            requestId: input.requestId,
+            sessionId: input.sessionId,
+            capabilities,
+            restoration: "core",
+            persistence: { version: 1, data: { token: "root" } },
+            cwd: input.config.cwd,
+          });
+          emit({
+            type: "session.config",
+            sessionId: input.sessionId,
+            config: {
+              model: "plugin-model",
+              mode: "build",
+              models: [{ id: "plugin-model", label: "Plugin model" }],
+              modes: [{ id: "build", label: "Build" }],
+              thinkingOptions: [],
+              settings: [
+                {
+                  type: "select",
+                  id: "voice",
+                  label: "Voice",
+                  value: "direct",
+                  options: [{ label: "Direct", value: "direct" }],
+                },
+              ],
+            },
+          });
+          emit({
+            type: "session.opened",
+            sessionId: "child-1",
+            parentSessionId: input.sessionId,
+            capabilities: [],
+            restoration: "parent",
+            title: "Plugin child",
+            cwd: input.config.cwd,
+          });
+          emit({
+            type: "timeline.item",
+            sessionId: "child-1",
+            item: { type: "assistant_message", id: "child-message", text: "Child result" },
+          });
+          emit({
+            type: "session.turn",
+            sessionId: "child-1",
+            turnId: "child-turn",
+            state: "completed",
+          });
+          emit({ type: "session.ready", sessionId: "child-1" });
+          options.openChildren?.(input.sessionId, emit);
+          emit({ type: "session.ready", requestId: input.requestId, sessionId: input.sessionId });
+          return;
+        }
+        if (input.type === "session.prompt") {
+          emit({
+            type: "session.prompt_result",
+            sessionId: input.sessionId,
+            clientMessageId: input.prompt.clientMessageId,
+            result: { type: "turn", turnId: "turn-1" },
+          });
           emit({
             type: "session.turn",
             sessionId: input.sessionId,
             turnId: "turn-1",
-            state: "completed",
+            state: "started",
           });
+          emit({
+            type: "timeline.item",
+            sessionId: input.sessionId,
+            item: { type: "assistant_message", id: "answer", text: "Hel" },
+          });
+          emit({
+            type: "timeline.item",
+            sessionId: input.sessionId,
+            item: { type: "assistant_message", id: "answer", text: "Hello" },
+          });
+          emit({
+            type: "session.permission",
+            sessionId: input.sessionId,
+            request: { id: "permission-1", name: "write", kind: "tool" },
+          });
+          if (options.completeTurn !== false) {
+            emit({
+              type: "session.turn",
+              sessionId: input.sessionId,
+              turnId: "turn-1",
+              state: "completed",
+            });
+          }
+          return;
         }
-        return;
-      }
-      if (input.type === "session.permission") {
-        emit({
-          type: "session.permission_resolved",
-          sessionId: input.sessionId,
-          permissionId: input.permissionId,
-        });
-        return;
-      }
-      if (input.type === "session.configure") {
-        emit({
-          type: "session.config",
-          sessionId: input.sessionId,
-          config: {
-            model: input.changes.model ?? "plugin-model",
-            mode: "build",
-            models: [{ id: "plugin-model", label: "Plugin model" }],
-            modes: [{ id: "build", label: "Build" }],
-            thinkingOptions: [],
-            settings: [],
-          },
-        });
-        emit({ type: "request.completed", requestId: input.requestId });
-        return;
-      }
-      if (input.type === "session.close") {
-        emit({ type: "session.closed", sessionId: input.sessionId });
-      }
-      if ("requestId" in input) {
-        emit({ type: "request.completed", requestId: input.requestId });
-      }
-    },
-    onEvent(nextListener) {
-      listener = nextListener;
-      return () => {
-        if (listener === nextListener) listener = null;
-      };
-    },
-    async close() {
-      closeCount += 1;
-      resolveClosed();
-    },
+        if (input.type === "session.permission") {
+          emit({
+            type: "session.permission_resolved",
+            sessionId: input.sessionId,
+            permissionId: input.permissionId,
+          });
+          return;
+        }
+        if (input.type === "session.configure") {
+          emit({
+            type: "session.config",
+            sessionId: input.sessionId,
+            config: {
+              model: input.changes.model ?? "plugin-model",
+              mode: "build",
+              models: [{ id: "plugin-model", label: "Plugin model" }],
+              modes: [{ id: "build", label: "Build" }],
+              thinkingOptions: [],
+              settings: [],
+            },
+          });
+          emit({ type: "request.completed", requestId: input.requestId });
+          return;
+        }
+        if (input.type === "session.close") {
+          emit({ type: "session.closed", sessionId: input.sessionId });
+        }
+        if ("requestId" in input) {
+          emit({ type: "request.completed", requestId: input.requestId });
+        }
+      },
+      onEvent(nextListener) {
+        listener = nextListener;
+        return () => {
+          if (listener === nextListener) listener = null;
+        };
+      },
+      async close() {
+        closeCount += 1;
+        resolveClosed();
+      },
+    };
+    active = {
+      fail(error) {
+        failed = error;
+        rejectClosed(error);
+      },
+      closed,
+    };
+    return connection;
   };
 
   const registration: ProviderRegistration = {
     id: "plugin-direct",
     label: "Plugin direct",
     async connect() {
-      return connection;
+      connectCount += 1;
+      return buildConnection();
     },
   };
 
@@ -216,7 +235,15 @@ function createProviderHarness(options: ProviderHarnessOptions = {}) {
     emit,
     inputs,
     closeCount: () => closeCount,
-    waitForClose: () => closed,
+    connectCount: () => connectCount,
+    waitForClose: () => active?.closed,
+    /** Simulates the daemon failing a provider connection; resolves once the loss is observable. */
+    failConnection(error: Error): Promise<void> {
+      if (!active) throw new Error("No provider connection to fail");
+      const closed = active.closed;
+      active.fail(error);
+      return closed.catch(() => undefined);
+    },
   };
 }
 
@@ -670,6 +697,36 @@ describe("PluginAgentClientRegistry", () => {
       expect(isStaleProviderSessionError(failure)).toBe(true);
       expect(isStaleProviderSessionError(new Error("Provider connection is closed"))).toBe(false);
       expect(isStaleProviderSessionError(new Error("boom"))).toBe(false);
+    } finally {
+      await registry.shutdown();
+    }
+  });
+
+  test("reconnects on next use after the provider connection is lost", async () => {
+    const harness = createProviderHarness();
+    const registry = new PluginAgentClientRegistry(createTestLogger());
+    registry.replace([harness.registration]);
+    try {
+      const client = registry.clients()[harness.registration.id]!;
+      const session = await client.createSession({
+        provider: harness.registration.id,
+        cwd: "/workspace",
+      });
+      await client.fetchCatalog({ scope: "global" });
+      expect(harness.connectCount()).toBe(1);
+
+      await harness.failConnection(
+        new Error("Provider parent session did not negotiate session.subsession"),
+      );
+
+      await expect(
+        session.startTurn("after loss", { clientMessageId: "after-loss" }),
+      ).rejects.toBeInstanceOf(StaleProviderSessionError);
+
+      await expect(client.fetchCatalog({ scope: "global" })).resolves.toMatchObject({
+        models: [{ id: "plugin-model" }],
+      });
+      expect(harness.connectCount()).toBe(2);
     } finally {
       await registry.shutdown();
     }
