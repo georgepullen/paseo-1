@@ -395,7 +395,28 @@ class ProviderRuntime {
     }
     this.unsubscribe = unsubscribe;
     this.connection = connection;
+    void connection.closed?.then(
+      () => this.handleConnectionLost(connection, new Error("Provider connection closed")),
+      (error: unknown) =>
+        this.handleConnectionLost(
+          connection,
+          error instanceof Error ? error : new Error(String(error)),
+        ),
+    );
     return connection;
+  }
+
+  /**
+   * A lost connection must not strand the runtime: drop it so the next use establishes a
+   * fresh one. Interrupted sessions fail; idle sessions go stale and reopen from
+   * persistence, so one bad event does not take the provider down until restart.
+   */
+  private handleConnectionLost(connection: ProviderConnection, error: Error): void {
+    if (this.closed || this.connection !== connection) return;
+    this.connection = null;
+    this.unsubscribe?.();
+    this.unsubscribe = null;
+    for (const session of this.sessions.values()) session.connectionClosed(error);
   }
 
   private validateConnection(connection: ProviderConnection): void {
@@ -800,6 +821,7 @@ function normalizeConnection(connection: ProviderConnection): ProviderConnection
   return {
     version: connection.version,
     capabilities,
+    ...(connection.closed ? { closed: connection.closed } : {}),
     send: (input) => connection.send(ProviderInputSchema.parse(input)),
     onEvent: (listener) =>
       connection.onEvent((event) => listener(ProviderEventSchema.parse(event))),
