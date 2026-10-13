@@ -793,6 +793,40 @@ describe("PluginAgentClientRegistry", () => {
     }
   });
 
+  test("a session.closed after a runtime failure marks the provider session gone before close", async () => {
+    const harness = createProviderHarness({
+      handleInput: async (input, emit) => {
+        if (input.type !== "session.prompt") return false;
+        emit({
+          type: "session.runtime_failed",
+          sessionId: input.sessionId,
+          error: { message: "permission reply failed" },
+        });
+        emit({ type: "session.closed", sessionId: input.sessionId });
+        return true;
+      },
+    });
+    const registry = new PluginAgentClientRegistry(createTestLogger());
+    registry.replace([harness.registration]);
+    try {
+      const client = registry.clients()[harness.registration.id]!;
+      const session = await client.createSession({
+        provider: harness.registration.id,
+        cwd: "/workspace",
+      });
+
+      await expect(
+        session.startTurn("break it", { clientMessageId: "break-it" }),
+      ).rejects.toBeInstanceOf(StaleProviderSessionError);
+
+      await expect(session.close()).resolves.toBeUndefined();
+      expect(harness.inputs.filter((input) => input.type === "session.close")).toEqual([]);
+      expect(harness.connectCount()).toBe(1);
+    } finally {
+      await registry.shutdown();
+    }
+  });
+
   test("settles pending connection requests when the connection is lost", async () => {
     const harness = createProviderHarness({
       handleInput: async (input) => input.type === "catalog",
