@@ -766,10 +766,12 @@ class ProviderRuntimeSession {
       this.prompts.get(event.clientMessageId)?.resolve(event);
       return;
     }
+    // A session.closed after the session already went terminal (e.g. runtime_failed) still
+    // means the provider side is gone: record it before the terminal early-return.
+    if (event.type === "session.closed") this.providerGone = true;
     if (event.type === "session.runtime_failed" || event.type === "session.closed") {
       if (this.terminal) return;
       this.terminal = true;
-      if (event.type === "session.closed") this.providerGone = true;
       this.publish(event);
       this.rejectPending(new Error(event.error?.message ?? `Provider session ${this.id} closed`));
       return;
