@@ -827,6 +827,41 @@ describe("PluginAgentClientRegistry", () => {
     }
   });
 
+  test("session operations on a lost connection fail stale instead of reaching a recovered connection", async () => {
+    const harness = createProviderHarness();
+    const registry = new PluginAgentClientRegistry(createTestLogger());
+    registry.replace([harness.registration]);
+    try {
+      const client = registry.clients()[harness.registration.id]!;
+      const session = await client.createSession({
+        provider: harness.registration.id,
+        cwd: "/workspace",
+      });
+
+      await harness.failConnection(new Error("Plugin process exited: plugin-direct"));
+
+      await expect(session.setModel("other-model")).rejects.toBeInstanceOf(
+        StaleProviderSessionError,
+      );
+      await expect(session.interrupt()).rejects.toBeInstanceOf(StaleProviderSessionError);
+      await expect(
+        session.respondToPermission("permission-1", { behavior: "allow" }),
+      ).rejects.toBeInstanceOf(StaleProviderSessionError);
+      // revertConversation needs a timeline revert token before it reaches the bridge guard;
+      // the shared requireReachableProviderSession helper is mutation-covered via the ops above.
+      expect(
+        harness.inputs.filter((input) =>
+          ["session.configure", "session.permission", "session.interrupt", "session.revert"].includes(
+            input.type,
+          ),
+        ),
+      ).toEqual([]);
+      expect(harness.connectCount()).toBe(1);
+    } finally {
+      await registry.shutdown();
+    }
+  });
+
   test("settles pending connection requests when the connection is lost", async () => {
     const harness = createProviderHarness({
       handleInput: async (input) => input.type === "catalog",

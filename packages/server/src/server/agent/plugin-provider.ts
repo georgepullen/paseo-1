@@ -667,6 +667,7 @@ class ProviderRuntimeSession {
   }
 
   async configure(changes: ProviderConfigChanges): Promise<void> {
+    this.requireReachableProviderSession();
     const input: Extract<ProviderInput, { type: "session.configure" }> = {
       type: "session.configure",
       requestId: randomUUID(),
@@ -681,6 +682,7 @@ class ProviderRuntimeSession {
     permissionId: string,
     response: Extract<ProviderInput, { type: "session.permission" }>["response"],
   ): Promise<void> {
+    this.requireReachableProviderSession();
     const input: Extract<ProviderInput, { type: "session.permission" }> = {
       type: "session.permission",
       sessionId: this.providerSessionId,
@@ -692,17 +694,29 @@ class ProviderRuntimeSession {
   }
 
   async revert(token: ProviderInput & { type: "session.revert" }): Promise<void> {
+    this.requireReachableProviderSession();
     const input = { ...token, sessionId: this.providerSessionId };
     requireProviderCapabilities(this.capabilities, input);
     await this.runtime.complete(input);
   }
 
   async interrupt(): Promise<void> {
+    this.requireReachableProviderSession();
     await this.runtime.complete({
       type: "session.interrupt",
       requestId: randomUUID(),
       sessionId: this.providerSessionId,
     });
+  }
+
+  /**
+   * Session operations other than prompt() cannot be delivered once the provider-side
+   * session is unreachable: complete() would route them through a recovered connection
+   * that has never seen this session id. Fail stale so callers get the same signal the
+   * prompt path uses instead of a raw "Unknown provider session".
+   */
+  private requireReachableProviderSession(): void {
+    if (this.providerGone) throw new StaleProviderSessionError(this.id);
   }
 
   async close(): Promise<void> {
