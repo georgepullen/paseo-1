@@ -851,9 +851,12 @@ describe("PluginAgentClientRegistry", () => {
       // the shared requireReachableProviderSession helper is mutation-covered via the ops above.
       expect(
         harness.inputs.filter((input) =>
-          ["session.configure", "session.permission", "session.interrupt", "session.revert"].includes(
-            input.type,
-          ),
+          [
+            "session.configure",
+            "session.permission",
+            "session.interrupt",
+            "session.revert",
+          ].includes(input.type),
         ),
       ).toEqual([]);
       expect(harness.connectCount()).toBe(1);
