@@ -346,8 +346,13 @@ class ProviderRuntime {
   }
 
   removeSession(sessionId: string, providerSessionId: string): void {
+    const session = this.sessions.get(sessionId);
     this.sessions.delete(sessionId);
-    this.providerSessions.delete(providerSessionId);
+    // A stale session closing late must not drop the mapping of a replacement that
+    // re-registered the same provider session id on a recovered connection.
+    if (!session || this.providerSessions.get(providerSessionId) === session) {
+      this.providerSessions.delete(providerSessionId);
+    }
   }
 
   private getConnection(): Promise<ProviderConnection> {
@@ -421,6 +426,12 @@ class ProviderRuntime {
     this.requests.clear();
     this.sessionRequests.clear();
     for (const session of this.sessions.values()) session.connectionClosed(error);
+    // Provider session ids and pending descendants belong to the lost connection: drop
+    // them so children replayed on a recovered connection attach to fresh sessions
+    // instead of early-returning onto stale ones.
+    this.providerSessions.clear();
+    this.pendingOpenDescendants.clear();
+    this.pendingOpenDescendantsByRoot.clear();
   }
 
   private validateConnection(connection: ProviderConnection): void {

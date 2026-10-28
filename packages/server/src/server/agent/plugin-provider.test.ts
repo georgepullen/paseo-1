@@ -760,6 +760,49 @@ describe("PluginAgentClientRegistry", () => {
     }
   });
 
+  test("a resumed session re-attaches its replayed child after connection loss", async () => {
+    const harness = createProviderHarness();
+    const registry = new PluginAgentClientRegistry(createTestLogger());
+    registry.replace([harness.registration]);
+    try {
+      const client = registry.clients()[harness.registration.id]!;
+      const session = await client.createSession({
+        provider: harness.registration.id,
+        cwd: "/workspace",
+      });
+      const persistence = session.describePersistence()!;
+      await harness.failConnection(new Error("Plugin process exited: plugin-direct"));
+      await session.close();
+
+      // The provider replays child-1 (same provider session id) while reopening the parent.
+      const resumed = await client.resumeSession(persistence, { cwd: "/workspace" });
+      const history: AgentStreamEvent[] = [];
+      for await (const event of resumed.streamHistory()) history.push(event);
+      const live: AgentStreamEvent[] = [];
+      resumed.subscribe((event) => live.push(event));
+      harness.emit({
+        type: "timeline.item",
+        sessionId: "child-1",
+        item: { type: "assistant_message", id: "child-live", text: "Child after recovery" },
+      });
+
+      expect(harness.connectCount()).toBe(2);
+      const childTimelineTexts: string[][] = [];
+      for (const events of [history, live]) {
+        const texts: string[] = [];
+        for (const event of events) {
+          if (event.type !== "provider_subagent" || event.event.type !== "timeline") continue;
+          if (event.event.item.type !== "assistant_message") continue;
+          texts.push(event.event.item.text);
+        }
+        childTimelineTexts.push(texts);
+      }
+      expect(childTimelineTexts).toEqual([["Child result"], ["Child after recovery"]]);
+    } finally {
+      await registry.shutdown();
+    }
+  });
+
   test("a session failed on a live connection still cleans up its provider session on close", async () => {
     const harness = createProviderHarness({
       handleInput: async (input, emit) => {
